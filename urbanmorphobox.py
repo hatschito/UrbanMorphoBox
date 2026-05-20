@@ -116,14 +116,21 @@ class UrbanMorphoBox:
         from qgis.core import (
             QgsCoordinateReferenceSystem,
             QgsCoordinateTransform,
-            QgsProject
+            QgsProject,
+            QgsVectorLayer,
+            QgsFeature,
+            QgsGeometry,
+            QgsPointXY,
+            QgsField
         )
+
+        from PyQt5.QtCore import QVariant
 
         # Current map canvas
         canvas = self.iface.mapCanvas()
         extent = canvas.extent()
 
-        # Transform current CRS to WGS84
+        # Transform CRS to WGS84
         source_crs = canvas.mapSettings().destinationCrs()
         target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
 
@@ -135,13 +142,11 @@ class UrbanMorphoBox:
 
         extent_wgs84 = transform.transformBoundingBox(extent)
 
-        # Extract coordinates
         west = extent_wgs84.xMinimum()
         east = extent_wgs84.xMaximum()
         south = extent_wgs84.yMinimum()
         north = extent_wgs84.yMaximum()
 
-        # Overpass bounding box format
         bbox = f"{south},{west},{north},{east}"
 
         # Overpass query
@@ -149,17 +154,14 @@ class UrbanMorphoBox:
         [out:json][timeout:25];
         (
           way["building"]({bbox});
-          relation["building"]({bbox});
         );
-        out count;
+        out geom;
         """
 
-        # Overpass API endpoint
         url = "https://overpass-api.de/api/interpreter"
 
-        # Request headers
         headers = {
-            "User-Agent": "UrbanMorphoBox QGIS Plugin/0.1 (educational use)"
+            "User-Agent": "UrbanMorphoBox QGIS Plugin/0.1"
         }
 
         try:
@@ -171,30 +173,82 @@ class UrbanMorphoBox:
                 timeout=30
             )
 
-            if response.status_code == 200:
-
-                QMessageBox.information(
-                    None,
-                    "UrbanMorphoBox",
-                    f"Overpass request successful.\n\n"
-                    f"BBOX:\n{bbox}\n\n"
-                    f"Response:\n{response.text[:500]}"
-                )
-
-            else:
+            if response.status_code != 200:
 
                 QMessageBox.warning(
                     None,
                     "UrbanMorphoBox",
-                    f"Overpass request failed.\n\n"
-                    f"Status: {response.status_code}\n\n"
-                    f"{response.text[:500]}"
+                    f"Overpass request failed:\n{response.status_code}"
                 )
+
+                return
+
+            data = response.json()
+
+            # Create memory layer
+            layer = QgsVectorLayer(
+                "Polygon?crs=EPSG:4326",
+                "OSM Buildings",
+                "memory"
+            )
+
+            provider = layer.dataProvider()
+
+            provider.addAttributes([
+                QgsField("osm_id", QVariant.String)
+            ])
+
+            layer.updateFields()
+
+            features = []
+
+            for element in data["elements"]:
+
+                if "geometry" not in element:
+                    continue
+
+                points = []
+
+                for node in element["geometry"]:
+
+                    point = QgsPointXY(
+                        node["lon"],
+                        node["lat"]
+                    )
+
+                    points.append(point)
+
+                if len(points) < 3:
+                    continue
+
+                feature = QgsFeature()
+
+                feature.setGeometry(
+                    QgsGeometry.fromPolygonXY([points])
+                )
+
+                feature.setAttributes([
+                    str(element["id"])
+                ])
+
+                features.append(feature)
+
+            provider.addFeatures(features)
+
+            layer.updateExtents()
+
+            QgsProject.instance().addMapLayer(layer)
+
+            QMessageBox.information(
+                None,
+                "UrbanMorphoBox",
+                f"Downloaded {len(features)} buildings."
+            )
 
         except Exception as e:
 
             QMessageBox.critical(
                 None,
                 "UrbanMorphoBox",
-                f"Request error:\n\n{str(e)}"
+                f"Error:\n\n{str(e)}"
             )
