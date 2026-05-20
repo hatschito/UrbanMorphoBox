@@ -1,0 +1,47 @@
+# This file contains metadata for your plugin.
+
+# This file should be included when you package your plugin.# Mandatory items:
+
+[general]
+name=UrbanMorphoBox
+qgisMinimumVersion=3.0
+description=Download building footprints from OSM within a bounding box
+version=0.1
+author=Harald Schernthanner
+email=hschernt@uni-potsdam.de
+
+about=This plugin allows you to download and analyze building footprints within a defined bounding box. The initial version uses OpenStreetMap data via the Overpass API to retrieve building footprints. Future versions will integrate additional data sources and provide extended urban morphology analysis tools.
+
+tracker=http://bugs
+repository=http://repo
+# End of mandatory metadata
+
+# Recommended items:
+
+hasProcessingProvider=no
+# Uncomment the following line and add your changelog:
+# changelog=
+
+# Tags are comma separated with spaces allowed
+tags=python
+
+homepage=http://homepage
+category=Plugins
+icon=icon.png
+# experimental flag
+experimental=False
+
+# deprecated flag (applies to the whole plugin, not just a single version)
+deprecated=False
+
+# Since QGIS 3.8, a comma separated list of plugins to be installed
+# (or upgraded) can be specified.
+# Check the documentation for more information.
+# plugin_dependencies=
+
+Category of the plugin: Raster, Vector, Database or Web
+# category=
+
+# If the plugin can run on QGIS Server.
+server=False
+
