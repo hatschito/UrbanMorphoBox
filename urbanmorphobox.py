@@ -126,11 +126,12 @@ class UrbanMorphoBox:
 
         from PyQt5.QtCore import QVariant
 
-        # Current map canvas
+        max_features = 10000
+        max_bbox_area_deg = 0.05
+
         canvas = self.iface.mapCanvas()
         extent = canvas.extent()
 
-        # Transform CRS to WGS84
         source_crs = canvas.mapSettings().destinationCrs()
         target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
 
@@ -147,9 +148,24 @@ class UrbanMorphoBox:
         south = extent_wgs84.yMinimum()
         north = extent_wgs84.yMaximum()
 
+        bbox_area = abs((east - west) * (north - south))
+
+        if bbox_area > max_bbox_area_deg:
+            reply = QMessageBox.question(
+                None,
+                "UrbanMorphoBox",
+                "The current map extent is quite large.\n\n"
+                f"Approx. BBox area: {bbox_area:.4f} degree²\n"
+                f"Recommended maximum: {max_bbox_area_deg} degree²\n\n"
+                "Continue anyway?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+
+            if reply == QMessageBox.No:
+                return
+
         bbox = f"{south},{west},{north},{east}"
 
-        # Overpass query
         query = f"""
         [out:json][timeout:25];
         (
@@ -165,7 +181,6 @@ class UrbanMorphoBox:
         }
 
         try:
-
             response = requests.post(
                 url,
                 data={"data": query},
@@ -174,18 +189,15 @@ class UrbanMorphoBox:
             )
 
             if response.status_code != 200:
-
                 QMessageBox.warning(
                     None,
                     "UrbanMorphoBox",
                     f"Overpass request failed:\n{response.status_code}"
                 )
-
                 return
 
             data = response.json()
 
-            # Create memory layer
             layer = QgsVectorLayer(
                 "Polygon?crs=EPSG:4326",
                 "OSM Buildings",
@@ -204,19 +216,21 @@ class UrbanMorphoBox:
 
             for element in data["elements"]:
 
+                if len(features) >= max_features:
+                    break
+
                 if "geometry" not in element:
                     continue
 
                 points = []
 
                 for node in element["geometry"]:
-
-                    point = QgsPointXY(
-                        node["lon"],
-                        node["lat"]
+                    points.append(
+                        QgsPointXY(
+                            node["lon"],
+                            node["lat"]
+                        )
                     )
-
-                    points.append(point)
 
                 if len(points) < 3:
                     continue
@@ -234,7 +248,6 @@ class UrbanMorphoBox:
                 features.append(feature)
 
             provider.addFeatures(features)
-
             layer.updateExtents()
 
             QgsProject.instance().addMapLayer(layer)
@@ -242,11 +255,13 @@ class UrbanMorphoBox:
             QMessageBox.information(
                 None,
                 "UrbanMorphoBox",
-                f"Downloaded {len(features)} buildings."
+                "Download finished.\n\n"
+                f"Downloaded buildings: {len(features)}\n"
+                f"Object limit: {max_features}\n\n"
+                "Source: current map extent"
             )
 
         except Exception as e:
-
             QMessageBox.critical(
                 None,
                 "UrbanMorphoBox",
