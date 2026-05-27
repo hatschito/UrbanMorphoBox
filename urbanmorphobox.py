@@ -10,6 +10,7 @@
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
+
 from .resources import *
 from .urbanmorphobox_dialog import UrbanMorphoBoxDialog
 
@@ -39,7 +40,6 @@ class UrbanMorphoBox:
 
         self.actions = []
         self.menu = self.tr(u'&UrbanMorphoBox')
-
         self.first_start = None
 
     def tr(self, message):
@@ -121,7 +121,8 @@ class UrbanMorphoBox:
             QgsFeature,
             QgsGeometry,
             QgsPointXY,
-            QgsField
+            QgsField,
+            QgsDistanceArea
         )
 
         from PyQt5.QtCore import QVariant
@@ -198,19 +199,29 @@ class UrbanMorphoBox:
 
             data = response.json()
 
+            layer_name = "OSM Buildings"
+
             layer = QgsVectorLayer(
                 "Polygon?crs=EPSG:4326",
-                "OSM Buildings",
+                layer_name,
                 "memory"
             )
 
             provider = layer.dataProvider()
 
             provider.addAttributes([
-                QgsField("osm_id", QVariant.String)
+                QgsField("osm_id", QVariant.String),
+                QgsField("area_m2", QVariant.Double)
             ])
 
             layer.updateFields()
+
+            distance_area = QgsDistanceArea()
+            distance_area.setSourceCrs(
+                QgsCoordinateReferenceSystem("EPSG:4326"),
+                QgsProject.instance().transformContext()
+            )
+            distance_area.setEllipsoid("WGS84")
 
             features = []
 
@@ -235,20 +246,21 @@ class UrbanMorphoBox:
                 if len(points) < 3:
                     continue
 
+                geom = QgsGeometry.fromPolygonXY([points])
+                area = distance_area.measureArea(geom)
+
                 feature = QgsFeature()
-
-                feature.setGeometry(
-                    QgsGeometry.fromPolygonXY([points])
-                )
-
+                feature.setGeometry(geom)
                 feature.setAttributes([
-                    str(element["id"])
+                    str(element["id"]),
+                    area
                 ])
 
                 features.append(feature)
 
             provider.addFeatures(features)
             layer.updateExtents()
+            layer.setName(f"OSM Buildings ({len(features)})")
 
             QgsProject.instance().addMapLayer(layer)
 
