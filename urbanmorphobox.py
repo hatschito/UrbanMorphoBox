@@ -224,6 +224,7 @@ class UrbanMorphoBox:
             distance_area.setEllipsoid("WGS84")
 
             features = []
+            total_area = 0
 
             for element in data["elements"]:
 
@@ -248,6 +249,7 @@ class UrbanMorphoBox:
 
                 geom = QgsGeometry.fromPolygonXY([points])
                 area = distance_area.measureArea(geom)
+                total_area += area
 
                 feature = QgsFeature()
                 feature.setGeometry(geom)
@@ -258,6 +260,7 @@ class UrbanMorphoBox:
 
                 features.append(feature)
 
+            mean_area = total_area / len(features)
             provider.addFeatures(features)
             layer.updateExtents()
             layer.setName(f"OSM Buildings ({len(features)})")
@@ -268,6 +271,7 @@ class UrbanMorphoBox:
                 None,
                 "UrbanMorphoBox",
                 "Download finished.\n\n"
+                f"Average area: {mean_area:.1f} m²\n"
                 f"Downloaded buildings: {len(features)}\n"
                 f"Object limit: {max_features}\n\n"
                 "Source: current map extent"
