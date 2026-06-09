@@ -8,13 +8,92 @@
 """
 
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
-from qgis.PyQt.QtGui import QIcon
+from qgis.PyQt.QtGui import QIcon, QColor
 from qgis.PyQt.QtWidgets import QAction
+
+from qgis.gui import QgsMapTool, QgsRubberBand
+from qgis.core import (
+    QgsRectangle,
+    QgsGeometry,
+    QgsWkbTypes,
+    QgsPointXY
+)
 
 from .resources import *
 from .urbanmorphobox_dialog import UrbanMorphoBoxDialog
 
 import os.path
+
+
+class RectangleMapTool(QgsMapTool):
+    """Map tool to draw a rectangle on the QGIS canvas."""
+
+    def __init__(self, canvas, callback):
+        super().__init__(canvas)
+        self.canvas = canvas
+        self.callback = callback
+        self.start_point = None
+        self.end_point = None
+        self.is_drawing = False
+
+        self.rubber_band = QgsRubberBand(
+            self.canvas,
+            QgsWkbTypes.PolygonGeometry
+        )
+        self.rubber_band.setColor(QColor(255, 0, 0, 80))
+        self.rubber_band.setWidth(2)
+
+    def canvasPressEvent(self, event):
+        self.start_point = self.toMapCoordinates(event.pos())
+        self.end_point = self.start_point
+        self.is_drawing = True
+        self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+
+    def canvasMoveEvent(self, event):
+        if not self.is_drawing:
+            return
+
+        self.end_point = self.toMapCoordinates(event.pos())
+        self.update_rectangle()
+
+    def canvasReleaseEvent(self, event):
+        if not self.is_drawing:
+            return
+
+        self.end_point = self.toMapCoordinates(event.pos())
+        self.update_rectangle()
+
+        xmin = min(self.start_point.x(), self.end_point.x())
+        xmax = max(self.start_point.x(), self.end_point.x())
+        ymin = min(self.start_point.y(), self.end_point.y())
+        ymax = max(self.start_point.y(), self.end_point.y())
+
+        rect = QgsRectangle(xmin, ymin, xmax, ymax)
+
+        self.is_drawing = False
+        self.rubber_band.reset(QgsWkbTypes.PolygonGeometry)
+
+        self.callback(rect)
+
+    def update_rectangle(self):
+        if self.start_point is None or self.end_point is None:
+            return
+
+        p1 = self.start_point
+        p2 = self.end_point
+
+        points = [
+            QgsPointXY(p1.x(), p1.y()),
+            QgsPointXY(p2.x(), p1.y()),
+            QgsPointXY(p2.x(), p2.y()),
+            QgsPointXY(p1.x(), p2.y()),
+            QgsPointXY(p1.x(), p1.y())
+        ]
+
+        self.rubber_band.setToGeometry(
+            QgsGeometry.fromPolygonXY([points]),
+            None
+        )
 
 
 class UrbanMorphoBox:
@@ -41,6 +120,7 @@ class UrbanMorphoBox:
         self.actions = []
         self.menu = self.tr(u'&UrbanMorphoBox')
         self.first_start = None
+        self.rectangle_tool = None
 
     def tr(self, message):
         return QCoreApplication.translate('UrbanMorphoBox', message)
@@ -108,6 +188,25 @@ class UrbanMorphoBox:
             self.iface.removeToolBarIcon(action)
 
     def run(self):
+        """Start rectangle selection tool."""
+
+        from qgis.PyQt.QtWidgets import QMessageBox
+
+        QMessageBox.information(
+            None,
+            "UrbanMorphoBox",
+            "Draw a rectangle on the map to download OSM buildings."
+        )
+
+        self.rectangle_tool = RectangleMapTool(
+            self.iface.mapCanvas(),
+            self.download_buildings_from_extent
+        )
+
+        self.iface.mapCanvas().setMapTool(self.rectangle_tool)
+
+    def download_buildings_from_extent(self, extent):
+        """Download buildings from OSM using the drawn rectangle extent."""
 
         import requests
 
@@ -131,7 +230,6 @@ class UrbanMorphoBox:
         max_bbox_area_deg = 0.05
 
         canvas = self.iface.mapCanvas()
-        extent = canvas.extent()
 
         source_crs = canvas.mapSettings().destinationCrs()
         target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -143,6 +241,17 @@ class UrbanMorphoBox:
         )
 
         extent_wgs84 = transform.transformBoundingBox(extent)
+        rectangle_geom = QgsGeometry.fromRect(extent_wgs84)
+
+        distance_area_rect = QgsDistanceArea()
+        distance_area_rect.setSourceCrs(
+            QgsCoordinateReferenceSystem("EPSG:4326"),
+            QgsProject.instance().transformContext()
+        )
+        distance_area_rect.setEllipsoid("WGS84")
+
+        rectangle_area_m2 = distance_area_rect.measureArea(rectangle_geom)
+        rectangle_area_km2 = rectangle_area_m2 / 1_000_000
 
         west = extent_wgs84.xMinimum()
         east = extent_wgs84.xMaximum()
@@ -155,7 +264,7 @@ class UrbanMorphoBox:
             reply = QMessageBox.question(
                 None,
                 "UrbanMorphoBox",
-                "The current map extent is quite large.\n\n"
+                "The selected rectangle is quite large.\n\n"
                 f"Approx. BBox area: {bbox_area:.4f} degree²\n"
                 f"Recommended maximum: {max_bbox_area_deg} degree²\n\n"
                 "Continue anyway?",
@@ -188,6 +297,15 @@ class UrbanMorphoBox:
                 headers=headers,
                 timeout=30
             )
+
+            if response.status_code == 504:
+                QMessageBox.warning(
+                    None,
+                    "UrbanMorphoBox",
+                    "Overpass timeout (504).\n\n"
+                    "Try a smaller area or retry later."
+                )
+                return
 
             if response.status_code != 200:
                 QMessageBox.warning(
@@ -260,7 +378,17 @@ class UrbanMorphoBox:
 
                 features.append(feature)
 
-            mean_area = total_area / len(features)
+            if len(features) > 0:
+                mean_area = total_area / len(features)
+            else:
+                mean_area = 0
+
+            building_density = 0
+            if rectangle_area_km2 > 0:
+                building_density = len(features) / rectangle_area_km2
+            else:
+                building_density = 0
+
             provider.addFeatures(features)
             layer.updateExtents()
             layer.setName(f"OSM Buildings ({len(features)})")
@@ -271,10 +399,12 @@ class UrbanMorphoBox:
                 None,
                 "UrbanMorphoBox",
                 "Download finished.\n\n"
-                f"Average area: {mean_area:.1f} m²\n"
                 f"Downloaded buildings: {len(features)}\n"
+                f"Average area: {mean_area:.1f} m²\n"
+                f"Rectangle area: {rectangle_area_km2:.2f} km²\n"
+                f"Building density: {building_density:.1f} buildings/km²\n"
                 f"Object limit: {max_features}\n\n"
-                "Source: current map extent"
+                "Source: drawn rectangle"
             )
 
         except Exception as e:
