@@ -381,8 +381,16 @@ class UrbanMorphoBox:
             if len(features) > 0:
                 mean_area = total_area / len(features)
             else:
-                mean_area = 0
+                if len(features) == 0:
+                    QMessageBox.information(
+                        None,
+                        "UrbanMorphoBox",
+                        "No buildings found in the selected area.\n\n"
+                        "Try drawing a larger rectangle or selecting another area."
+                    )
+                    return
 
+                mean_area = total_area / len(features)
             building_density = 0
             if rectangle_area_km2 > 0:
                 building_density = len(features) / rectangle_area_km2
