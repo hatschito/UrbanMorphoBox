@@ -10,13 +10,18 @@
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon, QColor
 from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtGui import QColor
+
 
 from qgis.gui import QgsMapTool, QgsRubberBand
 from qgis.core import (
     QgsRectangle,
     QgsGeometry,
     QgsWkbTypes,
-    QgsPointXY
+    QgsPointXY,
+    QgsGraduatedSymbolRenderer,
+    QgsRendererRange,
+    QgsSymbol
 )
 
 from .resources import *
@@ -221,7 +226,10 @@ class UrbanMorphoBox:
             QgsGeometry,
             QgsPointXY,
             QgsField,
-            QgsDistanceArea
+            QgsDistanceArea,
+            QgsGraduatedSymbolRenderer,
+            QgsRendererRange,
+            QgsSymbol
         )
 
         from PyQt5.QtCore import QVariant
@@ -400,6 +408,44 @@ class UrbanMorphoBox:
             provider.addFeatures(features)
             layer.updateExtents()
             layer.setName(f"OSM Buildings ({len(features)})")
+
+            symbol_small = QgsSymbol.defaultSymbol(layer.geometryType())
+            symbol_small.setColor(QColor(120, 200, 120))
+
+            symbol_medium = QgsSymbol.defaultSymbol(layer.geometryType())
+            symbol_medium.setColor(QColor(240, 200, 80))
+
+            symbol_large = QgsSymbol.defaultSymbol(layer.geometryType())
+            symbol_large.setColor(QColor(220, 90, 90))
+
+            ranges = [
+                QgsRendererRange(
+                    0,
+                    100,
+                    symbol_small,
+                    "< 100 m²"
+                ),
+                QgsRendererRange(
+                    100,
+                    500,
+                    symbol_medium,
+                    "100 - 500 m²"
+                ),
+                QgsRendererRange(
+                    500,
+                    1000000,
+                    symbol_large,
+                    "> 500 m²"
+                )
+            ]
+
+            renderer = QgsGraduatedSymbolRenderer(
+                "area_m2",
+                ranges
+            )
+
+            layer.setRenderer(renderer)
+            layer.triggerRepaint()
 
             QgsProject.instance().addMapLayer(layer)
 
