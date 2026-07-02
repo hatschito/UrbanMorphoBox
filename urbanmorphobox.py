@@ -7,18 +7,27 @@
  ***************************************************************************/
 """
 
+import os.path
+import requests
+
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon, QColor
-from qgis.PyQt.QtWidgets import QAction
-from qgis.PyQt.QtGui import QColor
-
+from qgis.PyQt.QtWidgets import QAction, QMessageBox
+from PyQt5.QtCore import QVariant
 
 from qgis.gui import QgsMapTool, QgsRubberBand
 from qgis.core import (
-    QgsRectangle,
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
+    QgsProject,
+    QgsVectorLayer,
+    QgsFeature,
     QgsGeometry,
-    QgsWkbTypes,
     QgsPointXY,
+    QgsField,
+    QgsDistanceArea,
+    QgsRectangle,
+    QgsWkbTypes,
     QgsGraduatedSymbolRenderer,
     QgsRendererRange,
     QgsSymbol
@@ -26,8 +35,6 @@ from qgis.core import (
 
 from .resources import *
 from .urbanmorphobox_dialog import UrbanMorphoBoxDialog
-
-import os.path
 
 
 class RectangleMapTool(QgsMapTool):
@@ -195,8 +202,6 @@ class UrbanMorphoBox:
     def run(self):
         """Start rectangle selection tool."""
 
-        from qgis.PyQt.QtWidgets import QMessageBox
-
         QMessageBox.information(
             None,
             "UrbanMorphoBox",
@@ -210,29 +215,73 @@ class UrbanMorphoBox:
 
         self.iface.mapCanvas().setMapTool(self.rectangle_tool)
 
-    def download_buildings_from_extent(self, extent):
-        """Download buildings from OSM using the drawn rectangle extent."""
+    def create_tiles_from_extent(self, extent_wgs84, tile_size_deg=0.01):
+        """Create rectangular tiles from a WGS84 bounding box."""
 
-        import requests
+        tiles = []
 
-        from qgis.PyQt.QtWidgets import QMessageBox
+        west = extent_wgs84.xMinimum()
+        east = extent_wgs84.xMaximum()
+        south = extent_wgs84.yMinimum()
+        north = extent_wgs84.yMaximum()
 
-        from qgis.core import (
-            QgsCoordinateReferenceSystem,
-            QgsCoordinateTransform,
-            QgsProject,
-            QgsVectorLayer,
-            QgsFeature,
-            QgsGeometry,
-            QgsPointXY,
-            QgsField,
-            QgsDistanceArea,
-            QgsGraduatedSymbolRenderer,
-            QgsRendererRange,
-            QgsSymbol
+        x = west
+
+        while x < east:
+            next_x = min(x + tile_size_deg, east)
+
+            y = south
+
+            while y < north:
+                next_y = min(y + tile_size_deg, north)
+
+                tile = QgsRectangle(
+                    x,
+                    y,
+                    next_x,
+                    next_y
+                )
+
+                tiles.append(tile)
+
+                y = next_y
+
+            x = next_x
+
+        return tiles
+
+    def add_tile_debug_layer(self, tiles):
+        """Add a temporary polygon layer showing generated tiles."""
+
+        layer = QgsVectorLayer(
+            "Polygon?crs=EPSG:4326",
+            "UrbanMorphoBox Tiles",
+            "memory"
         )
 
-        from PyQt5.QtCore import QVariant
+        provider = layer.dataProvider()
+
+        provider.addAttributes([
+            QgsField("tile_id", QVariant.Int)
+        ])
+
+        layer.updateFields()
+
+        features = []
+
+        for tile_id, tile in enumerate(tiles, start=1):
+            feature = QgsFeature()
+            feature.setGeometry(QgsGeometry.fromRect(tile))
+            feature.setAttributes([tile_id])
+            features.append(feature)
+
+        provider.addFeatures(features)
+        layer.updateExtents()
+
+        QgsProject.instance().addMapLayer(layer)
+
+    def download_buildings_from_extent(self, extent):
+        """Download buildings from OSM using the drawn rectangle extent."""
 
         max_features = 10000
         max_bbox_area_deg = 0.05
@@ -249,6 +298,14 @@ class UrbanMorphoBox:
         )
 
         extent_wgs84 = transform.transformBoundingBox(extent)
+
+        tiles = self.create_tiles_from_extent(
+            extent_wgs84,
+            tile_size_deg=0.01
+        )
+
+        self.add_tile_debug_layer(tiles)
+
         rectangle_geom = QgsGeometry.fromRect(extent_wgs84)
 
         distance_area_rect = QgsDistanceArea()
@@ -386,24 +443,21 @@ class UrbanMorphoBox:
 
                 features.append(feature)
 
-            if len(features) > 0:
-                mean_area = total_area / len(features)
-            else:
-                if len(features) == 0:
-                    QMessageBox.information(
-                        None,
-                        "UrbanMorphoBox",
-                        "No buildings found in the selected area.\n\n"
-                        "Try drawing a larger rectangle or selecting another area."
-                    )
-                    return
+            if len(features) == 0:
+                QMessageBox.information(
+                    None,
+                    "UrbanMorphoBox",
+                    "No buildings found in the selected area.\n\n"
+                    "Try drawing a larger rectangle or selecting another area."
+                )
+                return
 
-                mean_area = total_area / len(features)
+            mean_area = total_area / len(features)
+
             building_density = 0
+
             if rectangle_area_km2 > 0:
                 building_density = len(features) / rectangle_area_km2
-            else:
-                building_density = 0
 
             provider.addFeatures(features)
             layer.updateExtents()
