@@ -10,10 +10,9 @@
 import os.path
 import requests
 
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, QVariant
 from qgis.PyQt.QtGui import QIcon, QColor
 from qgis.PyQt.QtWidgets import QAction, QMessageBox
-from PyQt5.QtCore import QVariant
 
 from qgis.gui import QgsMapTool, QgsRubberBand
 from qgis.core import (
@@ -277,6 +276,15 @@ class UrbanMorphoBox:
 
         provider.addFeatures(features)
         layer.updateExtents()
+
+        symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+
+        symbol.setColor(QColor(120, 120, 120, 70))
+        symbol.symbolLayer(0).setStrokeColor(QColor(60, 60, 60, 180))
+        symbol.symbolLayer(0).setStrokeWidth(0.4)
+
+        layer.renderer().setSymbol(symbol)
+        layer.triggerRepaint()
 
         QgsProject.instance().addMapLayer(layer)
 
