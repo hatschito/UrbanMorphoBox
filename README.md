@@ -4,7 +4,7 @@ QGIS plugin for downloading and analysing OpenStreetMap (OSM) building footprint
 
 ## Status
 
-Experimental (v0.1)
+Experimental (v0.2.0)
 
 UrbanMorphoBox is an early-stage QGIS plugin currently under active development. The plugin is functional but should be considered experimental. Features, interfaces and workflows may change in future versions.
 
@@ -21,6 +21,19 @@ Current functionality includes:
 * Building count statistics
 * Bounding box size warning
 * Basic Overpass API error handling
+
+## Version 0.2.0
+
+- Experimental tiled downloads for larger areas
+- Automatic retries for failed Overpass requests
+- Duplicate removal using OSM IDs
+- Tile progress and status information
+- Clear warnings when results are incomplete
+
+### Known limitation
+
+Downloads currently run sequentially. During slow Overpass requests, QGIS may temporarily appear unresponsive. Results may be incomplete if individual tiles cannot be downloaded.
+
 
 ## Planned Features
 
