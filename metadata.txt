@@ -4,9 +4,9 @@
 name=UrbanMorphoBox
 qgisMinimumVersion=3.28
 description=Download and analyse OSM building footprints for urban morphology studies.
-version=0.1
+version=0.2.0
 author=Harald Schernthanner
-email=hschernt@uni-potsdam.de
+email=[hschernt@uni-potsdam.de](mailto:hschernt@uni-potsdam.de)
 
 about=UrbanMorphoBox is an experimental QGIS plugin for downloading OpenStreetMap building footprints within a user-defined area. It calculates basic urban morphology indicators such as building area, average building size and building density.
 
@@ -21,3 +21,6 @@ icon=icon.png
 experimental=True
 deprecated=False
 server=False
+
+changelog=Added experimental tiled Overpass downloads for larger areas, tile visualization, retry handling, progress and status feedback, duplicate removal by OSM ID, and warnings for incomplete results.
+
