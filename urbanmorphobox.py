@@ -9,6 +9,7 @@
 
 import os.path
 import time
+from qgis.PyQt.QtWidgets import QInputDialog
 
 import requests
 
@@ -212,11 +213,25 @@ class UrbanMorphoBox:
             self.iface.removeToolBarIcon(action)
 
     def run(self):
-        """Start the rectangle selection tool."""
+        """Select a building data source and start the map selection."""
+
+        source, ok = QInputDialog.getItem(
+            self.iface.mainWindow(),
+            "UrbanMorphoBox – Data Source",
+            "Building data source:",
+            ["OpenStreetMap"],
+            0,
+            False,
+        )
+
+        if not ok:
+            return
+
         QMessageBox.information(
             None,
             "UrbanMorphoBox",
-            "Draw a rectangle on the map to download OSM buildings.",
+            f"Selected source: {source}\n\n"
+            "Draw a rectangle on the map to download buildings.",
         )
 
         self.rectangle_tool = RectangleMapTool(
@@ -224,13 +239,6 @@ class UrbanMorphoBox:
             self.download_buildings_from_extent,
         )
         self.iface.mapCanvas().setMapTool(self.rectangle_tool)
-
-    def show_status(self, message, timeout_ms=0):
-        """Show a message in the QGIS status bar."""
-        self.iface.mainWindow().statusBar().showMessage(
-            message,
-            timeout_ms,
-        )
 
     def wait_with_events(self, seconds, progress=None):
         """Wait while keeping the GUI responsive enough for cancellation."""
