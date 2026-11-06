@@ -4,7 +4,7 @@
 name=UrbanMorphoBox
 qgisMinimumVersion=3.28
 description=Download and analyse OSM building footprints for urban morphology studies.
-version=0.2.1
+version=0.3.0
 author=Harald Schernthanner
 email=[hschernt@uni-potsdam.de](mailto:hschernt@uni-potsdam.de)
 
@@ -22,5 +22,5 @@ experimental=True
 deprecated=False
 server=False
 
-changelog=Reduced the plugin icon size for correct display in the QGIS Plugin Repository
+changelog=Version 0.3.0: Added Microsoft Global ML Building Footprints support, city-scale downloads, caching, resumable downloads, spatial filtering and GeoPackage export.	
 

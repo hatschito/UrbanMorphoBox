@@ -3,12 +3,13 @@
 /***************************************************************************
  UrbanMorphoBox
                                  A QGIS plugin
- Download building footprints from OSM within a bounding box
+ Download and analyze OSM and Microsoft building footprints within a bounding box
  ***************************************************************************/
 """
 
 import os.path
 import time
+from pathlib import Path
 from qgis.PyQt.QtWidgets import QInputDialog
 
 import requests
@@ -40,6 +41,8 @@ from qgis.core import (
     QgsRectangle,
     QgsRendererRange,
     QgsSymbol,
+    QgsTask,
+    QgsApplication,
     QgsVectorLayer,
     QgsWkbTypes,
 )
@@ -47,6 +50,13 @@ from qgis.gui import QgsMapTool, QgsRubberBand
 
 from .resources import *
 from .urbanmorphobox_dialog import UrbanMorphoBoxDialog
+from .microsoft_buildings import (
+    Cancelled as MicrosoftCancelled,
+    DATASET_RELEASE as MICROSOFT_RELEASE,
+    find_microsoft_tiles,
+    cache_status,
+    download_and_export,
+)
 
 
 class RectangleMapTool(QgsMapTool):
@@ -123,6 +133,69 @@ class RectangleMapTool(QgsMapTool):
         )
 
 
+class MicrosoftLookupTask(QgsTask):
+    """Lookup download URLs without touching the QGIS GUI from a worker thread."""
+
+    def __init__(self, bbox, cache_dir, on_finished):
+        super().__init__("UrbanMorphoBox: locate Microsoft tiles", QgsTask.CanCancel)
+        self.bbox = bbox
+        self.cache_dir = cache_dir
+        self.on_finished = on_finished
+        self.matches = []
+        self.error = None
+
+    def run(self):
+        try:
+            self.matches = find_microsoft_tiles(
+                self.bbox, self.cache_dir, cancelled=self.isCanceled
+            )
+            return not self.isCanceled()
+        except MicrosoftCancelled:
+            return False
+        except Exception as error:
+            self.error = str(error)
+            return False
+
+    def finished(self, success):
+        # QgsTask.finished() executes on the QGIS main (GUI) thread.
+        self.on_finished(success, self.matches, self.error, self.bbox)
+
+
+class MicrosoftDownloadTask(QgsTask):
+    """Download, spatially clip, and export in a background QGIS task."""
+
+    def __init__(self, matches, bbox, cache_dir, output_dir, on_finished):
+        super().__init__("UrbanMorphoBox: download Microsoft buildings", QgsTask.CanCancel)
+        self.matches = matches
+        self.bbox = bbox
+        self.cache_dir = cache_dir
+        self.output_dir = output_dir
+        self.on_finished = on_finished
+        self.result_data = None
+        self.error = None
+
+    def run(self):
+        try:
+            self.result_data = download_and_export(
+                self.matches,
+                self.bbox,
+                self.cache_dir,
+                self.output_dir,
+                cancelled=self.isCanceled,
+                report=self.setProgress,
+            )
+            return not self.isCanceled()
+        except MicrosoftCancelled:
+            return False
+        except Exception as error:
+            self.error = str(error)
+            return False
+
+    def finished(self, success):
+        # All QGIS layers and dialogs must be created on the main thread.
+        self.on_finished(success, self.result_data, self.error)
+
+
 class UrbanMorphoBox:
     """QGIS plugin implementation."""
 
@@ -152,6 +225,8 @@ class UrbanMorphoBox:
         self.menu = self.tr("&UrbanMorphoBox")
         self.first_start = None
         self.rectangle_tool = None
+        self.microsoft_lookup_task = None
+        self.microsoft_download_task = None
 
     def tr(self, message):
         """Translate a message."""
@@ -205,6 +280,10 @@ class UrbanMorphoBox:
 
     def unload(self):
         """Remove plugin menu entries and toolbar icons."""
+        if self.microsoft_lookup_task is not None:
+            self.microsoft_lookup_task.cancel()
+        if self.microsoft_download_task is not None:
+            self.microsoft_download_task.cancel()
         for action in self.actions:
             self.iface.removePluginMenu(
                 self.tr("&UrbanMorphoBox"),
@@ -213,32 +292,160 @@ class UrbanMorphoBox:
             self.iface.removeToolBarIcon(action)
 
     def run(self):
-        """Select a building data source and start the map selection."""
-
+        """Select OSM or Microsoft, then let the user draw a study rectangle."""
         source, ok = QInputDialog.getItem(
             self.iface.mainWindow(),
             "UrbanMorphoBox – Data Source",
             "Building data source:",
-            ["OpenStreetMap"],
+            ["OpenStreetMap", "Microsoft Global ML Building Footprints"],
             0,
             False,
         )
-
         if not ok:
             return
-
-        QMessageBox.information(
-            None,
-            "UrbanMorphoBox",
-            f"Selected source: {source}\n\n"
-            "Draw a rectangle on the map to download buildings.",
+        self.iface.messageBar().pushInfo(
+            "UrbanMorphoBox", f"{source}: draw a rectangle on the map."
         )
-
         self.rectangle_tool = RectangleMapTool(
             self.iface.mapCanvas(),
-            self.download_buildings_from_extent,
+            lambda extent: self.download_from_source(extent, source),
         )
         self.iface.mapCanvas().setMapTool(self.rectangle_tool)
+
+    def download_from_source(self, extent, source):
+        """Dispatch rectangle downloads to the selected data provider."""
+        if source == "OpenStreetMap":
+            self.download_buildings_from_extent(extent)
+        elif source == "Microsoft Global ML Building Footprints":
+            self.download_microsoft_buildings(extent)
+
+    def download_microsoft_buildings(self, extent):
+        """Start a background lookup for the Microsoft level-9 download tiles."""
+        if self.microsoft_lookup_task is not None or self.microsoft_download_task is not None:
+            QMessageBox.information(
+                self.iface.mainWindow(), "UrbanMorphoBox",
+                "A Microsoft download or lookup is already running."
+            )
+            return
+        try:
+            source_crs = self.iface.mapCanvas().mapSettings().destinationCrs()
+            target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            transform = QgsCoordinateTransform(
+                source_crs, target_crs, QgsProject.instance()
+            )
+            rect = transform.transformBoundingBox(extent)
+            bbox = (
+                rect.xMinimum(), rect.yMinimum(),
+                rect.xMaximum(), rect.yMaximum(),
+            )
+        except Exception as error:
+            QMessageBox.warning(
+                self.iface.mainWindow(), "UrbanMorphoBox",
+                f"Could not transform study area to WGS84:\n{error}"
+            )
+            return
+        cache_dir = Path.home() / ".cache" / "UrbanMorphoBox" / "microsoft" / MICROSOFT_RELEASE
+        task = MicrosoftLookupTask(bbox, cache_dir, self._microsoft_lookup_finished)
+        self.microsoft_lookup_task = task
+        QgsApplication.taskManager().addTask(task)
+        self.show_status("UrbanMorphoBox: looking up Microsoft tile index ...", 10000)
+
+    def _microsoft_lookup_finished(self, success, matches, error, bbox):
+        self.microsoft_lookup_task = None
+        if not success:
+            if error:
+                QMessageBox.warning(
+                    self.iface.mainWindow(), "UrbanMorphoBox – Microsoft lookup failed", error
+                )
+            return  # Canceled tasks should not pop up a warning.
+        if not matches:
+            QMessageBox.information(
+                self.iface.mainWindow(), "UrbanMorphoBox",
+                "No Microsoft footprint files were found for this rectangle."
+            )
+            return
+        tile_keys = sorted({item["quadkey"] for item in matches})
+        tile_names = ", ".join(tile_keys[:8])
+        if len(tile_keys) > 8:
+            tile_names += f", ... (+{len(tile_keys) - 8} more)"
+        cache_dir = Path.home() / ".cache" / "UrbanMorphoBox" / "microsoft" / MICROSOFT_RELEASE
+        cached_count, cached_bytes = cache_status(matches, cache_dir)
+        message = (
+            f"Microsoft dataset: {MICROSOFT_RELEASE}\n"
+            f"Files in study area: {len(matches)}\n"
+            f"Already cached: {cached_count} ({cached_bytes / 1024**2:,.0f} MiB)\n"
+            f"Level-9 quadkeys: {tile_names}\n\n"
+            "The full source tiles may be much larger than your rectangle.\n"
+            "Downloads run with up to 2 connections, can be canceled,\n"
+            "and continue from previous partial downloads when supported.\n"
+            "Only buildings within the rectangle enter the GeoPackage.\n\n"
+            "Start download? (Progress/cancel: QGIS Task Manager)"
+        )
+        reply = QMessageBox.question(
+            self.iface.mainWindow(), "UrbanMorphoBox – Microsoft buildings",
+            message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+        output_dir = Path.home() / ".local" / "share" / "UrbanMorphoBox" / "outputs"
+        task = MicrosoftDownloadTask(
+            matches, bbox, cache_dir, output_dir, self._microsoft_download_finished
+        )
+        self.microsoft_download_task = task
+        QgsApplication.taskManager().addTask(task)
+        self.show_status("UrbanMorphoBox: Microsoft buildings download running ...", 10000)
+
+    def _microsoft_download_finished(self, success, result, error):
+        self.microsoft_download_task = None
+        if not success:
+            if error:
+                QMessageBox.warning(
+                    self.iface.mainWindow(), "UrbanMorphoBox – Microsoft download failed",
+                    error,
+                )
+            else:
+                self.show_status("UrbanMorphoBox: Microsoft download canceled", 10000)
+            return
+        path = result["path"]
+        layer = QgsVectorLayer(
+            path + "|layername=microsoft_buildings",
+            f"Microsoft Buildings ({result['features']})",
+            "ogr",
+        )
+        if not layer.isValid():
+            QMessageBox.warning(
+                self.iface.mainWindow(), "UrbanMorphoBox",
+                "The downloaded GeoPackage could not be opened in QGIS:\n" + path
+            )
+            return
+        layer.setCustomProperty("UrbanMorphoBox/source", "Microsoft")
+        layer.setCustomProperty("UrbanMorphoBox/dataset_release", MICROSOFT_RELEASE)
+        layer.setCustomProperty("UrbanMorphoBox/footprint_license", "CDLA Permissive 2.0")
+        symbol = QgsSymbol.defaultSymbol(layer.geometryType())
+        if symbol:
+            symbol.setColor(QColor(80, 140, 220, 180))
+            layer.renderer().setSymbol(symbol)
+        QgsProject.instance().addMapLayer(layer)
+        n = result["features"]
+        message = (
+            f"Microsoft buildings: {n:,}\n"
+            f"Footprint area: {result['area_m2']:,.0f} m²\n"
+            f"Downloaded files: {result['download_files']} "
+            f"({result['cached_files']} from cache)\n"
+            f"Invalid features skipped: {result['invalid']:,}\n"
+            f"Resumed tiles/checkpoints: {result.get('resumed_tiles', 0)}\n"
+            f"Reused finished output: {'yes' if result.get('reused_output') else 'no'}\n\n"
+            f"GeoPackage:\n{path}"
+        )
+        QMessageBox.information(self.iface.mainWindow(), "UrbanMorphoBox", message)
+        self.show_status(f"UrbanMorphoBox: {n:,} Microsoft buildings loaded", 15000)
+
+    def show_status(self, message, timeout_ms=0):
+        """Show a message in the QGIS status bar."""
+        self.iface.mainWindow().statusBar().showMessage(
+            message,
+            timeout_ms,
+        )
 
     def wait_with_events(self, seconds, progress=None):
         """Wait while keeping the GUI responsive enough for cancellation."""
